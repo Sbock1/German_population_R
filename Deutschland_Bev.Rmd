@@ -1,0 +1,292 @@
+---
+title: "German population data analysis"
+author: "sbock"
+date: "2023-12-31"
+output:
+  html_document: 
+    code_folding: show
+  pdf_document: default
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = TRUE)
+```
+##### Libraries used:
+``` {r}
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(plotly)
+library(shiny)
+```
+
+
+
+## This paper explores population data in Germany from 2014 - 2022:
+
+**Main attributes:**  
+- Maritial status ("verheiratet / ledig / verwitwet / geschieden / Lebenpartnerschaft")  
+- People with citizenship / no citizenship living in Germany ("Nationalität")  
+- Gender ("Geschlecht")  
+- Age ("Alter")  
+- Amount of people in each category ("Anzahl")  
+
+Source from Destatis (Deutsches statistisches Bundesamt) / Genesis Database / Dataset 12411-0008  
+<https://www-genesis.destatis.de/genesis//online?operation=table&code=12411-0008&bypass=true&levelindex=1&levelid=1704038027755#abreadcrumb>
+The raw data from Destatis was in multi-column format and was transformed into long-format for easier processing.   
+  
+  
+See example of Dataset (df) here:
+
+```{r class.source="fold-hide"}
+# See example of Dataset (df) here:
+df <- read_excel("C:/Users/SeboB/Documents/Test_R_1/Destatis_Q42022_Alter_Geschlecht_Familienstand__Ausländer_Mengen__melted_v1.xlsx")
+df[6000:6030, ]
+```
+
+
+**Explanation**: 
+Foreigners (Ausländer) are persons with no german citizenship according to Art. 116 Abs. 1 deutsches Grundgesetz, but they live within german boarders.  
+<https://www-genesis.destatis.de/genesis/online?operation=statistic&levelindex=0&levelid=1704038020380&code=12411&option=table&info=on#abreadcrumb> 
+
+
+```{r class.source='fold-hide'}
+# Here code in order to convert raw data in a process-able format
+
+# Data munging
+## Change of data format of columns for further processing (like time format and numeric values)
+df$Jahr <- as.Date(df$Jahr, format = "%d.%m.%Y")
+df$Jahr <- as.numeric(year(df$Jahr))
+df$Anzahl <- as.numeric(df$Anzahl)
+df$Alter <- as.numeric(df$Alter)
+
+## Clean dataframe from na-values
+df <- df %>%
+  drop_na()
+
+## Grouping to get total population per year
+df_total_pop <- df %>%
+  group_by(Jahr) %>%
+  summarise(Total_Anzahl = sum(Anzahl, na.rm = TRUE))
+
+
+## Calculating additional values for later presentation
+## Grouping total amount of foreigners to native population per year
+df_aggregiert <- df %>%
+  group_by(Jahr, Nationalität) %>%
+  summarise(Total_Anzahl = sum(Anzahl, na.rm = TRUE))
+
+## Grouping % of foreigners to native population
+df_aggregiert1 <- df_aggregiert %>%
+  group_by(Jahr) %>%
+  mutate(Anteil_an_Bev = Total_Anzahl / sum(Total_Anzahl), Anteil_Rest_an_Bev = 1 - Anteil_an_Bev)
+
+## Grouping age distribution foreigner
+df_aggregiert2 <- df %>%
+  group_by(Jahr, Alter) %>%
+  filter(Nationalität == "Ausländer") %>%
+  summarise(Total_Anzahl = sum(Anzahl, na.rm = TRUE))
+
+## Grouping age distribution native
+df_aggregiert3 <- df %>%
+  group_by(Jahr, Alter) %>%
+  filter(Nationalität == "Deutsche") %>%
+  summarise(Total_Anzahl = sum(Anzahl, na.rm = TRUE))
+
+
+## Grouping age distribution total population
+df_all <- df %>%
+  group_by(Jahr, Alter, Nationalität) %>%
+  summarise(Total_Anzahl = sum(Anzahl, na.rm = TRUE))
+
+## Grouping age categories function
+df_age_groups <- function(df) {
+  df <- df %>%
+    mutate(
+      Altersgruppe = cut(
+        Alter,
+        breaks = c(0, 18, 35, 50, 67, 85),
+        labels = c("0-18", "19-35", "36-50", "51-67", "68-85+"),
+        include.lowest = TRUE
+      )
+    )
+  return(df)
+}
+  
+
+```
+
+
+## **1. Question**: How did the overall population in Germany develop in recent years (2014-2022)?:
+
+### Population grew from **81.1 Mio. to 84.3 Mio.** people.  
+### **That is an increase by 4% in 8 years, which is a normal value for developed countries. It is similar to France and the USA.**
+
+```{r total_pop, class.source="fold-hide", fig.height=5, fig.width=10}
+# Total population
+df_total_pop
+
+
+ggplot(df_total_pop, aes(x = Jahr, y = Total_Anzahl)) + 
+  geom_line(color = "blue", size = 2) +
+  geom_text(aes(label = scales::number_format(scale = 1e-6, suffix = " Mio.")(Total_Anzahl)),
+             size = 3, vjust = -0.5, hjust = 0.5) +
+  labs(title = "Population growth from 31.12.2014 to 1.1.2023", x = "Year", y = "Population in Millions") + 
+  scale_y_continuous(labels = scales::number_format(scale = 1e-6, suffix = " Mio."))
+  
+```
+
+There were two major jumps. One in 2015 and one in 2022, where **population increased by +1 Mio. per year**. 
+Exact migration patterns in 2014 need further investigation.  
+The migration in 2022 is mostly based on the Ukrainian war, which started in February.  
+
+## **2. Question**: Rumor was always german population is shrinking? Then where did this total growth come from?:
+
+```{r class.source="fold-hide"}
+## Stacked bar chart 2: Absolute reference with showing absolute population growth
+ggplot(df_aggregiert, aes(x = Jahr, y = Total_Anzahl, fill = factor(Nationalität))) +
+  geom_bar(stat = "identity")+
+  geom_text(aes(label = sprintf("%.f%%", df_aggregiert1$Anteil_an_Bev * 100)), position = position_stack(vjust = 0.5), size = 3) +
+  labs(title = "Growth based on native and foreign population",
+       x = "Year", y = "Population in Millions",
+       fill = "Nationalität") +
+  scale_y_continuous(labels = scales::number_format(scale = 1e-6, suffix = " Mio."))
+
+```
+  
+**German society now consists of 15% of first-generation immigrants with no citizenship compared to 9% in 2014.**  
+
+The German native population is even shrinking, but the foreign population gains overcompensate this. 
+Because Germany has an over-aging problem, will this immigrated population be available to fill the gap in the workforce in the next 1-10 years?  
+
+## **3. Question**: How big is the decline of the workforce in the native population and how much does the immigration compensate (educational aspects not considered, only sheer population numbers)?:  
+
+Workforce-age is defined from 18...67.  
+(Actual retirement age is 63, but the topic of getting the population to actually work until official retirement age, is not considered here.)  
+
+```{r class.source="fold-hide",  fig.height=10, fig.width=20}
+# Shiny interactive graphics
+## Shiny-App definition
+ui <- fluidPage(
+  titlePanel("Verteilungen der Bevölkerung"),
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("year", "Jahr auswählen", min = 2014, max = 2022, value = 2014, step = 1)
+    ),
+    mainPanel(
+      plotOutput("populationPlot")
+    )
+  )
+)
+
+##
+server <- function(input, output) {
+  output$populationPlot <- renderPlot({
+    # Filtern Sie die Daten nach dem ausgewählten Jahr
+    df_filtered <- df_aggregiert2 %>%
+      filter(Jahr == input$year)
+
+    # Create age groups
+    df_filtered_groups <- df_age_groups(df_filtered)
+    
+    #Calculate age group total amount
+    df_filtered_group_total <- df_filtered_groups %>%
+      group_by(Altersgruppe) %>%
+      summarize(Total_Anzahl = sum(Total_Anzahl))
+    
+    # Total amount of all foreigner
+    df_filtered_all_foreign_total <- df_filtered_groups %>%
+      group_by(Jahr) %>%
+      summarise(Total_Gruppe = sum(Total_Anzahl))
+    
+    #Percentage group to total(foreigner)
+    df_filtered_group_total_expanded <- df_filtered_group_total %>%
+      mutate(Percentage = (Total_Anzahl/df_filtered_all_foreign_total$Total_Gruppe)*100)
+    
+    
+    # ggplot erstellen
+    p <- ggplot(df_filtered_group_total_expanded, aes(x = Altersgruppe, y = Total_Anzahl, fill = factor(Altersgruppe))) +
+      geom_bar(stat = "identity") +
+      geom_text(aes(label = sprintf("%.2f%%", Percentage))) +
+      labs(
+        title = paste("Distribution of foreign population in Germany", input$year),
+        x = "age group",
+        y = "Population"
+      ) +
+      theme_minimal() + 
+      ylim(0,5000000)
+    options(scipen = 999)
+
+    print(p)
+  })
+}
+
+# Starting App
+shinyApp(ui, server)
+
+
+```
+
+```{r class.source="fold-hide",  fig.height=10, fig.width=20}
+# Shiny interactive graphics
+## Shiny-App definition
+ui <- fluidPage(
+  titlePanel("Verteilungen der Bevölkerung"),
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("year", "Jahr auswählen", min = 2014, max = 2022, value = 2014, step = 1)
+    ),
+    mainPanel(
+      plotOutput("populationPlot")
+    )
+  )
+)
+
+##
+server <- function(input, output) {
+  output$populationPlot <- renderPlot({
+    # Filtern Sie die Daten nach dem ausgewählten Jahr
+    df_filtered <- df_aggregiert3 %>%
+      filter(Jahr == input$year)
+
+    # Create age groups
+    df_filtered_groups <- df_age_groups(df_filtered)
+    
+    #Calculate age group total amount
+    df_filtered_group_total <- df_filtered_groups %>%
+      group_by(Altersgruppe) %>%
+      summarize(Total_Anzahl = sum(Total_Anzahl))
+    
+    # Total amount of all foreigner
+    df_filtered_all_native_total <- df_filtered_groups %>%
+      group_by(Jahr) %>%
+      summarise(Total_Gruppe = sum(Total_Anzahl))
+    
+    #Percentage group to total(foreigner)
+    df_filtered_group_total_expanded <- df_filtered_group_total %>%
+      mutate(Percentage = (Total_Anzahl/df_filtered_all_native_total$Total_Gruppe)*100)
+    
+    
+    # ggplot erstellen
+    p <- ggplot(df_filtered_group_total_expanded, aes(x = Altersgruppe, y = Total_Anzahl, fill = factor(Altersgruppe))) +
+      geom_bar(stat = "identity") +
+      geom_text(aes(label = sprintf("%.2f%%", Percentage))) +
+      labs(
+        title = paste("Distribution of native population in Germany", input$year),
+        x = "age group",
+        y = "Population"
+      ) +
+      theme_minimal() + 
+      ylim(0,40000000)
+    options(scipen = 999)
+
+    print(p)
+  })
+}
+
+# Starting App
+shinyApp(ui, server)
+
+
+```
